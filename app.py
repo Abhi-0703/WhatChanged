@@ -243,27 +243,28 @@ if st.session_state.latest_alert:
     else:
         st.session_state.latest_alert = None
 
-# Metrics calculation
-stats = {"frames_seen": 0, "skipped": 0, "calls_saved_percent": 100.0, "model_calls": 0, "last_latency_ms": 0, "status": "Stopped"}
-if st.session_state.watcher:
-    # Update rules dynamically if changed in UI
-    st.session_state.watcher.update_rules(rules)
-    stats = st.session_state.watcher.stats()
-elif st.session_state.events:
-    stats["status"] = "Stopped"
+@st.fragment(run_every=f"{max(1.0, interval_s)}s" if st.session_state.is_running else None)
+def metrics_panel():
+    stats = {"frames_seen": 0, "skipped": 0, "calls_saved_percent": 100.0, "model_calls": 0, "last_latency_ms": 0, "status": "Stopped"}
+    if st.session_state.watcher:
+        # Update rules dynamically if changed in UI
+        st.session_state.watcher.update_rules(rules)
+        stats = st.session_state.watcher.stats()
 
-# Metric Cards Row
-m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
-with m_col1:
-    st.metric("Frames Evaluated", f"{stats['frames_seen']}")
-with m_col2:
-    st.metric("Frames Skipped", f"{stats['skipped']}")
-with m_col3:
-    st.metric("Frames Needing No AI (Saved)", f"{stats['calls_saved_percent']}%", delta=f"{stats['calls_saved_percent']}%")
-with m_col4:
-    st.metric("Gemma 4 Calls", f"{stats['model_calls']}")
-with m_col5:
-    st.metric("Model Latency", f"{stats['last_latency_ms']} ms", delta=f"{stats['status']}")
+    # Metric Cards Row
+    m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
+    with m_col1:
+        st.metric("Frames Evaluated", f"{stats['frames_seen']}")
+    with m_col2:
+        st.metric("Frames Skipped", f"{stats['skipped']}")
+    with m_col3:
+        st.metric("Frames Needing No AI (Saved)", f"{stats['calls_saved_percent']}%", delta=f"{stats['calls_saved_percent']}%")
+    with m_col4:
+        st.metric("Gemma 4 Calls", f"{stats['model_calls']}")
+    with m_col5:
+        st.metric("Model Latency", f"{stats['last_latency_ms']} ms", delta=f"{stats['status']}")
+
+metrics_panel()
 
 st.divider()
 
@@ -329,8 +330,9 @@ def live_feed_panel():
 with feed_col:
     live_feed_panel()
 
-# Event Timeline Panel
-with timeline_col:
+# Event Timeline Panel (live-refreshing fragment so new cards appear without pressing Stop)
+@st.fragment(run_every=f"{max(1.0, interval_s)}s" if st.session_state.is_running else None)
+def timeline_panel():
     t_header_col, dl_col = st.columns([2, 1])
     with t_header_col:
         st.subheader(f"Activity Timeline ({len(st.session_state.events)})")
@@ -376,3 +378,6 @@ with timeline_col:
                 st.markdown("**What changed:**")
                 for ch in ev.changes:
                     st.markdown(f"- {ch}")
+
+with timeline_col:
+    timeline_panel()
