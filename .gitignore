@@ -1,0 +1,30 @@
+# Environment & secrets
+.env
+.env.local
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data & runs
+events/
+*.log
+.DS_Store
+
+# Testing & caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Image ignores except committed samples
+*.jpg
+*.jpeg
+*.png
+!samples/*.jpg
+!samples/*.jpeg
+!samples/*.png
+!assets/*.jpg
+!assets/*.png
