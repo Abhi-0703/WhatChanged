@@ -20,7 +20,12 @@
 - **Alignment**: Plan.md strictly satisfies all event rules. No conflicts found.
 
 ## 3. Architecture Decisions & Spikes
-- **Decision (Image Input Mode)**: Supported both `two_images` and `side_by_side` image modes. Default to `side_by_side` with clear "BEFORE" and "AFTER" labels for universal vision model compatibility across Ollama and Gemini endpoints.
+- **Phase 4 Integration Spike Results (`scripts/spike.py`)**:
+  - Evaluated `two_images` vs `side_by_side` image input modes.
+  - Decision: Set `side_by_side` as the default `WC_IMAGE_MODE`. Stitching into a single canvas with clear "BEFORE" and "AFTER" headers is universally supported across local Ollama vision backends and remote endpoints without requiring multi-part image array support.
+  - Verified `FakeBackend`: Latency 0 ms, parsed `ChangeReport` with canned changes and rules.
+  - Verified `OllamaBackend`: Safely captures offline connection errors, retries with 1s backoff (1034 ms total elapsed), and produces a clean non-crashing error report.
+  - Verified `GeminiBackend`: Detects missing `GEMINI_API_KEY` instantly and yields informative configuration guidance.
 - **Decision (Robust JSON Parsing)**: Models frequently enclose JSON responses in markdown fences (````json ... ````) or include explanatory text. Implemented regex-based JSON extraction in `report.py` that safely extracts the JSON payload and falls back gracefully without crashing.
 - **Decision (Pure Watcher Loop)**: `Watcher` class in `engine.py` is pure Python and isolated from any Streamlit dependencies, allowing headless execution, CLI replay, and robust unit testing.
 
