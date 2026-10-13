@@ -43,6 +43,7 @@ st.markdown(
     .status-watching { background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
     .status-settling { background-color: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
     .status-analyzing { background-color: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; }
+    .status-ratelimited { background-color: #fef9c3; color: #a16207; border: 1px solid #fde047; }
     .status-stopped { background-color: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }
     .status-error { background-color: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
     .alert-banner {
@@ -83,7 +84,7 @@ if "snapshot_notice" not in st.session_state:
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.title("👁️ What Changed?")
-st.sidebar.caption("Continuous Visual Change Watcher powered by Gemma 4")
+st.sidebar.caption("Visual Change Watcher — Hosted Gemma 4 (Gemini API) + Local Gemma 4 (Ollama)")
 
 # Source selector
 source_spec = st.sidebar.text_input(
@@ -92,36 +93,37 @@ source_spec = st.sidebar.text_input(
     help="Webcam index ('0', '1'), phone stream ('http://192.168.1.X:8080/video'), video file, or folder of images ('samples/').",
 )
 
-# Backend selection
+# Backend selection: Gemini API is now default
 backend_choice = st.sidebar.radio(
     "Inference Backend",
-    options=["Local (Ollama)", "Gemini API", "Fake Backend (Offline Simulation)"],
+    options=["Gemini API (Hosted Gemma 4)", "Local Ollama (On-Device Gemma 4)", "Fake Backend (Offline Simulation)"],
     index=0,
+    help="Hosted Gemma 4 via Gemini API for convenience; local Gemma 4 via Ollama for privacy & offline use.",
 )
 
-backend_key = "ollama"
-if "Gemini" in backend_choice:
-    backend_key = "gemini"
+backend_key = "gemini"
+if "Ollama" in backend_choice:
+    backend_key = "ollama"
 elif "Fake" in backend_choice:
     backend_key = "fake"
 
 # Model names
 settings = Settings.from_env()
-if backend_key == "ollama":
-    model_name = st.sidebar.text_input("Ollama Model", value=settings.ollama_model)
-    ollama_host = st.sidebar.text_input("Ollama Host", value=settings.ollama_host)
-    settings.ollama_model = model_name
-    settings.ollama_host = ollama_host
-elif backend_key == "gemini":
+if backend_key == "gemini":
     gemini_key = st.sidebar.text_input(
         "Gemini API Key",
         value=settings.gemini_api_key,
         type="password",
         help="Google AI Studio API key.",
     )
-    model_name = st.sidebar.text_input("Gemini Model", value=settings.gemini_model)
+    model_name = st.sidebar.text_input("Gemma 4 Model ID", value=settings.gemini_model)
     settings.gemini_api_key = gemini_key
     settings.gemini_model = model_name
+elif backend_key == "ollama":
+    model_name = st.sidebar.text_input("Ollama Model", value=settings.ollama_model)
+    ollama_host = st.sidebar.text_input("Ollama Host", value=settings.ollama_host)
+    settings.ollama_model = model_name
+    settings.ollama_host = ollama_host
 
 # Rules
 rules_text = st.sidebar.text_area(
@@ -135,7 +137,7 @@ rules = [r.strip() for r in rules_text.splitlines() if r.strip()]
 with st.sidebar.expander("⚙️ Watcher Tuning", expanded=False):
     interval_s = st.slider("Check Interval (seconds)", min_value=1.0, max_value=30.0, value=3.0, step=0.5)
     sensitivity = st.slider("Sensitivity Threshold (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.1)
-    max_calls = st.slider("Budget Guard (Max calls/min)", min_value=1, max_value=20, value=6, step=1)
+    max_calls = st.slider("Budget Guard (Max calls/min)", min_value=1, max_value=20, value=4, step=1)
     image_mode = st.selectbox("Image Mode", options=["side_by_side", "two_images"], index=0)
 
 settings.interval = interval_s
@@ -290,8 +292,11 @@ def live_feed_panel():
 
         current_stats = st.session_state.watcher.stats()
         status_name = current_stats["status"].upper()
-        status_str = status_name
-        status_class = f"status-{status_name.lower()}"
+        status_class = f"status-{status_name.lower().replace(' ', '')}"
+        if status_name == "RATE LIMITED":
+            status_str = "RATE LIMITED (SLOWING DOWN)"
+        else:
+            status_str = status_name
         last_score_str = f"{current_stats['last_score']}%"
 
     st.markdown(
@@ -299,6 +304,9 @@ def live_feed_panel():
         f"Diff: <code>{last_score_str}</code> (threshold: {sensitivity}%)",
         unsafe_allow_html=True,
     )
+
+    if status_str.startswith("RATE LIMITED"):
+        st.warning("⚠️ **Rate limited (HTTP 429)**: The watcher is automatically backing off and slowing down calls to conserve quota.")
 
     # Show live or reference frame
     display_frame = None

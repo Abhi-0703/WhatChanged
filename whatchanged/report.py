@@ -14,6 +14,7 @@ class ChangeReport:
     triggered_rule_ids: list[int] = field(default_factory=list)
     raw: str = ""
     parse_error: bool = False
+    rate_limited: bool = False
 
 
 def _find_json_object(text: str) -> str:

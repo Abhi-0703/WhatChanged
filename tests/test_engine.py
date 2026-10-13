@@ -42,7 +42,7 @@ def test_static_frames_no_model_calls():
     f = _make_frame(100)
     source = MockListSource([f, f, f, f, f])
     backend = FakeBackend()
-    settings = Settings(sensitivity=2.0)
+    settings = Settings(sensitivity=2.0, use_cache=False)
     watcher = Watcher(source, backend, settings)
 
     for _ in range(5):
@@ -60,14 +60,9 @@ def test_one_real_change_settles_and_fires_event():
     # Changed frame (has white rectangle)
     f_change = _make_frame_with_rect(50, 255)
 
-    # Frame sequence:
-    # 0: reference
-    # 1: change detected -> becomes candidate (settling)
-    # 2: same changed frame -> scene settled! Triggers model call
-    # 3: model future finishes -> event harvested!
     source = MockListSource([f0, f_change, f_change, f_change])
     backend = FakeBackend(canned_changes=["Cup placed on desk"], canned_rule_ids=[0])
-    settings = Settings(sensitivity=2.0)
+    settings = Settings(sensitivity=2.0, use_cache=False)
     rules = ["alert when cup is placed"]
     watcher = Watcher(source, backend, settings, rules=rules)
 
@@ -105,15 +100,13 @@ def test_one_real_change_settles_and_fires_event():
 
 def test_continuous_motion_delays_model_call():
     f0 = _make_frame(50)
-    # Successive distinct changes (motion in progress)
     f_move1 = _make_frame_with_rect(50, 180)
     f_move2 = _make_frame_with_rect(50, 220)
     f_settled = _make_frame_with_rect(50, 255)
 
-    # Sequence: ref, move1 (candidate), move2 (replaces candidate), settled (replaces), settled (stable -> fire)
     source = MockListSource([f0, f_move1, f_move2, f_settled, f_settled, f_settled])
     backend = FakeBackend()
-    settings = Settings(sensitivity=2.0)
+    settings = Settings(sensitivity=2.0, use_cache=False)
     watcher = Watcher(source, backend, settings)
 
     # Tick 0: ref
@@ -147,9 +140,8 @@ def test_budget_guard_caps_calls():
     f2 = _make_frame_with_rect(50, 10)
 
     # Allow at most 1 call per minute
-    settings = Settings(sensitivity=2.0, max_calls_per_min=1)
+    settings = Settings(sensitivity=2.0, max_calls_per_min=1, use_cache=False)
     backend = FakeBackend()
-    # Provide repeated frames so first change settles and second change tries to settle
     source = MockListSource([f0, f1, f1, f1, f2, f2, f2])
     watcher = Watcher(source, backend, settings)
 
@@ -175,7 +167,7 @@ def test_backend_exception_increments_errors_and_continues():
 
     source = MockListSource([f0, f1, f1, f1])
     backend = FakeBackend(should_raise=True)
-    settings = Settings(sensitivity=2.0)
+    settings = Settings(sensitivity=2.0, use_cache=False)
     watcher = Watcher(source, backend, settings)
 
     watcher.step()  # ref
@@ -185,7 +177,6 @@ def test_backend_exception_increments_errors_and_continues():
     watcher.step()  # harvests error
 
     assert watcher.errors >= 1
-    # Loop continues operating
     stats = watcher.stats()
     assert stats["errors"] >= 1
     watcher.close()
@@ -194,7 +185,7 @@ def test_backend_exception_increments_errors_and_continues():
 def test_store_and_export_markdown(tmp_path):
     store = EventStore(base_dir=tmp_path)
     backend = FakeBackend(canned_changes=["Door opened"], canned_rule_ids=[0])
-    settings = Settings(sensitivity=2.0)
+    settings = Settings(sensitivity=2.0, use_cache=False)
     f0 = _make_frame(50)
     f1 = _make_frame_with_rect(50, 255)
     source = MockListSource([f0, f1, f1, f1])
@@ -217,4 +208,74 @@ def test_store_and_export_markdown(tmp_path):
     md = export_markdown(loaded)
     assert "Door opened" in md
     assert "notify if door opened" in md
+    watcher.close()
+
+
+def test_response_cache_offline_replay():
+    # Load sample frames 1 and 2
+    from pathlib import Path
+    import cv2
+    from whatchanged.cache import default_cache
+
+    p1 = Path("samples/01_empty_desk.jpg")
+    p2 = Path("samples/02_bottle_added.jpg")
+    if not p1.exists() or not p2.exists():
+        pytest.skip("Sample frames not present")
+
+    f1 = cv2.imread(str(p1))
+    f2 = cv2.imread(str(p2))
+
+    source = MockListSource([f1, f2, f2])
+    # Use a backend that would raise if called to prove the response is served from cache with 0 network calls!
+    backend = FakeBackend(should_raise=True)
+    settings = Settings(sensitivity=2.0)
+    rules = ["notify me if a bottle is placed on the desk"]
+    watcher = Watcher(source, backend, settings, rules=rules)
+
+    watcher.step()  # ref = f1
+    watcher.step()  # cand = f2
+    # Step 3: f2 settled. Watcher checks cache, finds pre-seeded response, immediately creates event!
+    events = watcher.step()
+
+    assert len(events) == 1
+    ev = events[0]
+    assert "bottle" in ev.changes[0].lower()
+    assert ev.latency_ms == 0
+    assert "Cached" in ev.backend_name
+    assert watcher.model_calls == 0  # Zero live model calls made!
+    watcher.close()
+
+
+def test_rate_limited_handling_and_backoff():
+    from whatchanged.report import ChangeReport
+
+    class RateLimitedBackend(FakeBackend):
+        def describe_change(self, before, after, rules):
+            return ChangeReport(
+                changes=[],
+                triggered_rule_ids=[],
+                raw="HTTP 429 Resource Exhausted",
+                parse_error=False,
+                rate_limited=True,
+            )
+
+    f0 = _make_frame(50)
+    f1 = _make_frame_with_rect(50, 255)
+    source = MockListSource([f0, f1, f1, f1, f1])
+    backend = RateLimitedBackend()
+    settings = Settings(sensitivity=2.0, use_cache=False)
+    watcher = Watcher(source, backend, settings)
+
+    watcher.step()  # ref
+    watcher.step()  # cand
+    watcher.step()  # submits job
+    time.sleep(0.05)
+    watcher.step()  # harvests rate limited result
+
+    assert watcher.status == "Rate Limited"
+    assert watcher.rate_limited_until > time.time()
+
+    # Subsequent tick stays in Rate Limited state and does not submit another job
+    watcher.step()
+    assert watcher.status == "Rate Limited"
     watcher.close()

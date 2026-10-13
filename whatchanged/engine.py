@@ -12,6 +12,7 @@ import uuid
 import numpy as np
 
 from whatchanged.backends.base import Backend
+from whatchanged.cache import default_cache
 from whatchanged.config import Settings
 from whatchanged.detect import change_score
 from whatchanged.imaging import to_jpeg_bytes
@@ -52,7 +53,8 @@ class Watcher:
         self.errors: int = 0
         self.last_latency_ms: int = 0
         self.last_score: float = 0.0
-        self.status: str = "Watching"  # Watching, Settling, Analyzing, Error, Stopped
+        self.status: str = "Watching"  # Watching, Settling, Analyzing, Rate Limited, Error, Stopped
+        self.rate_limited_until: float = 0.0
 
     def reset_reference(self) -> None:
         """Forces the next captured frame to become the new reference."""
@@ -89,37 +91,41 @@ class Watcher:
                 try:
                     report, lat_ms, diff_val, ref_img, cand_img = self.pending_future.result()
                     self.last_latency_ms = lat_ms
-                    self.status = "Watching"
 
-                    if report.parse_error:
+                    if report.rate_limited:
+                        self.status = "Rate Limited"
+                        self.rate_limited_until = time.time() + 15.0
+                    elif report.parse_error:
                         self.errors += 1
-                    elif report.changes:
-                        # Map triggered rule IDs to user strings
-                        matched_rules = [
-                            self.rules[rid]
-                            for rid in report.triggered_rule_ids
-                            if 0 <= rid < len(self.rules)
-                        ]
+                        self.status = "Error"
+                    else:
+                        self.status = "Watching"
+                        if report.changes:
+                            matched_rules = [
+                                self.rules[rid]
+                                for rid in report.triggered_rule_ids
+                                if 0 <= rid < len(self.rules)
+                            ]
 
-                        event_id = str(uuid.uuid4())[:8]
-                        now_str = datetime.now().strftime("%H:%M:%S")
+                            event_id = str(uuid.uuid4())[:8]
+                            now_str = datetime.now().strftime("%H:%M:%S")
 
-                        ev = Event(
-                            id=event_id,
-                            timestamp=now_str,
-                            timestamp_epoch=time.time(),
-                            changes=report.changes,
-                            triggered_rules=matched_rules,
-                            diff_percent=diff_val,
-                            latency_ms=lat_ms,
-                            backend_name=self.backend.name,
-                            before_bytes=to_jpeg_bytes(ref_img, max_side=self.settings.max_side),
-                            after_bytes=to_jpeg_bytes(cand_img, max_side=self.settings.max_side),
-                        )
-                        new_events.append(ev)
+                            ev = Event(
+                                id=event_id,
+                                timestamp=now_str,
+                                timestamp_epoch=time.time(),
+                                changes=report.changes,
+                                triggered_rules=matched_rules,
+                                diff_percent=diff_val,
+                                latency_ms=lat_ms,
+                                backend_name=self.backend.name,
+                                before_bytes=to_jpeg_bytes(ref_img, max_side=self.settings.max_side),
+                                after_bytes=to_jpeg_bytes(cand_img, max_side=self.settings.max_side),
+                            )
+                            new_events.append(ev)
 
-                    # Update reference frame to the settled candidate
-                    self.reference = cand_img
+                        # Update reference frame to the settled candidate
+                        self.reference = cand_img
                 except Exception:
                     self.errors += 1
                     self.status = "Error"
@@ -133,6 +139,14 @@ class Watcher:
                 if live_f is not None:
                     self.last_frame = live_f
                 return new_events
+
+        # Check if currently cooling down from a 429 rate limit
+        if time.time() < self.rate_limited_until:
+            self.status = "Rate Limited"
+            live_f = self.source.read()
+            if live_f is not None:
+                self.last_frame = live_f
+            return new_events
 
         # 2. Read current frame
         frame = self.source.read()
@@ -176,7 +190,41 @@ class Watcher:
             self.status = "Settling"
             return new_events
 
-        # 7. Budget guard: cap model calls within sliding 60s window
+        # 7. Check offline/pre-computed response cache before network or model calls
+        ref_for_job = self.reference.copy()
+        cand_for_job = self.candidate.copy()
+        ref_bytes = to_jpeg_bytes(ref_for_job, max_side=self.settings.max_side, quality=self.settings.jpeg_quality)
+        cand_bytes = to_jpeg_bytes(cand_for_job, max_side=self.settings.max_side, quality=self.settings.jpeg_quality)
+
+        if self.settings.use_cache:
+            cached_report = default_cache.get(ref_bytes, cand_bytes, len(self.rules))
+            if cached_report is not None:
+                self.last_latency_ms = 0
+                self.status = "Watching"
+                self.candidate = None
+                if cached_report.changes:
+                    matched_rules = [
+                        self.rules[rid]
+                        for rid in cached_report.triggered_rule_ids
+                        if 0 <= rid < len(self.rules)
+                    ]
+                    ev = Event(
+                        id=str(uuid.uuid4())[:8],
+                        timestamp=datetime.now().strftime("%H:%M:%S"),
+                        timestamp_epoch=time.time(),
+                        changes=cached_report.changes,
+                        triggered_rules=matched_rules,
+                        diff_percent=score,
+                        latency_ms=0,
+                        backend_name=f"{self.backend.name} (Cached)",
+                        before_bytes=ref_bytes,
+                        after_bytes=cand_bytes,
+                    )
+                    new_events.append(ev)
+                self.reference = cand_for_job
+                return new_events
+
+        # 8. Budget guard: cap model calls within sliding 60s window
         now = time.time()
         self.recent_call_times = [t for t in self.recent_call_times if now - t < 60.0]
         if len(self.recent_call_times) >= self.settings.max_calls_per_min:
@@ -184,20 +232,20 @@ class Watcher:
             self.status = "Settling"
             return new_events
 
-        # 8. Submit async inference job
+        # 9. Submit async inference job
         self.recent_call_times.append(now)
         self.model_calls += 1
         self.status = "Analyzing"
 
-        ref_for_job = self.reference.copy()
-        cand_for_job = self.candidate.copy()
         self.candidate_for_job = cand_for_job
         self.candidate = None
 
-        def _inference_worker(ref, cand, rules, backend, diff_p):
+        def _inference_worker(ref, cand, rules, backend, diff_p, r_bytes, c_bytes):
             t0 = time.time()
             rep = backend.describe_change(ref, cand, rules)
             lat = int((time.time() - t0) * 1000)
+            if self.settings.use_cache and not rep.parse_error and not rep.rate_limited:
+                default_cache.put(r_bytes, c_bytes, rep)
             return rep, lat, diff_p, ref, cand
 
         self.pending_future = self.executor.submit(
@@ -207,6 +255,8 @@ class Watcher:
             list(self.rules),
             self.backend,
             score,
+            ref_bytes,
+            cand_bytes,
         )
 
         return new_events

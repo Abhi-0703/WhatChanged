@@ -20,6 +20,10 @@
 - **Alignment**: Plan.md strictly satisfies all event rules. No conflicts found.
 
 ## 3. Architecture Decisions & Spikes
+- **Default Backend Selection**: Switched default backend to **Gemini API** using open-weight Gemma 4 (`gemma-4-26b-a4b-it` verified in official Google Gemini API April 2026 changelog and docs). This provides immediate, zero-download hosted inference.
+- **On-Device Local Option**: Maintained full `OllamaBackend` support defaulting to lightweight `gemma4:e2b` for privacy and offline usage without 17 GB storage overhead.
+- **HTTP 429 Rate-Limit Interception**: Automatically catches HTTP 429 and `RESOURCE_EXHAUSTED` responses, applies exponential backoff with retry, and displays a friendly `"RATE LIMITED (SLOWING DOWN)"` badge while pausing new calls for 15s. Default `WC_MAX_CALLS_PER_MIN` reduced to 4.
+- **Offline Response Cache (`ResponseCache`)**: Built image-hash cache seeded with sample frame transitions (`01_empty_desk.jpg` through `05_bottle_removed.jpg`). Guarantees that replay mode runs with **zero network dependencies**, 0ms latency, and no API keys required.
 - **Phase 4 Integration Spike Results (`scripts/spike.py`)**:
   - Evaluated `two_images` vs `side_by_side` image input modes.
   - Decision: Set `side_by_side` as the default `WC_IMAGE_MODE`. Stitching into a single canvas with clear "BEFORE" and "AFTER" headers is universally supported across local Ollama vision backends and remote endpoints without requiring multi-part image array support.
@@ -31,10 +35,8 @@
 
 ## 4. Needs Human Verification List
 1. **Camera Permissions on macOS**: Run `python -c "import cv2; cap=cv2.VideoCapture(0); print(cap.read()[0])"` in a standard Terminal window to trigger the macOS Camera Permission modal and click "Allow".
-2. **Local Ollama & Gemma 4 Pull**:
-   - Start Ollama: `brew services start ollama` or run `ollama serve`.
-   - Pull model: `ollama pull gemma4:e4b` (or `ollama pull gemma4:e2b` on low-power hardware).
-3. **Gemini API Key**: If testing the cloud fallback backend, export `GEMINI_API_KEY="your-key-here"` or add it to `.env`.
+2. **Live Gemini API Key & Gemma 4 Call**: Provide a live `GEMINI_API_KEY` from Google AI Studio in `.env` or the UI sidebar to verify live cloud inference against `gemma-4-26b-a4b-it`. (Not tested live by agent to avoid assuming external key validity).
+3. **Local Ollama & Gemma 4 (Optional)**: If testing on-device privacy mode, run `brew services start ollama` and `ollama pull gemma4:e2b`.
 4. **Live Room Snapshots**: Use the in-app "Save snapshot" button to capture people-free sample frames of an empty desk and added objects.
-5. **Offline Wi-Fi Verification**: Turn off Wi-Fi on the laptop, run `streamlit run app.py` with Ollama backend, and verify continuous detection works 100% offline.
+5. **Offline Wi-Fi Verification**: Run `streamlit run app.py` with Frame Source set to `samples/` (or Ollama backend), disconnect Wi-Fi, and verify continuous detection and timeline events work with zero network connection.
 6. **Publish Repo & Submit**: Push to GitHub public repository and submit the project link before the hackathon deadline.

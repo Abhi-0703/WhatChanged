@@ -63,6 +63,8 @@ class GeminiBackend(Backend):
             contents.append(types.Part.from_bytes(data=a_bytes, mime_type="image/jpeg"))
 
         last_error = ""
+        is_429 = False
+
         for attempt in range(2):
             try:
                 response = self._client.models.generate_content(
@@ -75,14 +77,32 @@ class GeminiBackend(Backend):
                     return report
                 last_error = f"Parse error in model response: {raw_text[:120]}"
             except Exception as e:
-                last_error = str(e)
+                err_str = str(e)
+                last_error = err_str
+                # Check for HTTP 429 or resource exhausted
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                    is_429 = True
+                    # Backoff longer on rate limit before retry
+                    if attempt == 0:
+                        time.sleep(2.0)
+                        continue
 
             if attempt == 0:
                 time.sleep(1.0)
+
+        if is_429:
+            return ChangeReport(
+                changes=[],
+                triggered_rule_ids=[],
+                raw=f"Rate limited (HTTP 429). Slowing down calls: {last_error[:100]}",
+                parse_error=False,
+                rate_limited=True,
+            )
 
         return ChangeReport(
             changes=[],
             triggered_rule_ids=[],
             raw=last_error,
             parse_error=True,
+            rate_limited=False,
         )
