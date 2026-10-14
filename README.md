@@ -134,7 +134,6 @@ WhatChanged/
 ├── samples/                  # People-free demo frames (01_empty_desk … 05_bottle_removed)
 ├── tests/                    # pytest suite (detect, report, engine, sources)
 ├── scripts/spike.py          # Backend integration spike (two_images vs side_by_side)
-├── DEMO.md                   # 90-second live demo script + fallback
 ├── NOTES.md                  # Engineering decisions & human-verification list
 ├── plan.md                   # Hackathon build plan (phases 1–9)
 ├── requirements.txt          # Pinned dependencies
@@ -325,9 +324,7 @@ Secret hygiene: `git ls-files | grep -E "\.env$"` must print nothing, and no `AI
 
 ---
 
-## Demo Script
-
-Full 90-second script with fallback: see **[DEMO.md](DEMO.md)**.
+## Demo Script (90 seconds)
 
 1. "Normal cameras record everything. This one only thinks when something changes." → point at **% Saved (No AI)**.
 2. Add/remove an object → timeline logs before/after + Gemma's sentence.
